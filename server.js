@@ -1,20 +1,15 @@
-import fs from 'fs';
-import path from 'path';
+import { put, get } from '@vercel/blob';
 import jsonServer from 'json-server';
+import express from 'express';
 import fetch from 'node-fetch';
-import { put, list } from '@vercel/blob';
-import { fileURLToPath } from 'url';
 
-// Fix __dirname in ESM
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const server = express();
+server.use(express.json());
 
-const server = jsonServer.create();
 const middlewares = jsonServer.defaults();
-const port = process.env.PORT || 3000;
+server.use(middlewares);
 
-// Folder in Blob where we store databases
-const BLOB_FOLDER = 'db';
+const port = process.env.PORT || 3000;
 
 // Validate GUID format
 function isValidGUID(guid) {
@@ -22,61 +17,38 @@ function isValidGUID(guid) {
   return guidRegex.test(guid);
 }
 
-// Load DB from Blob
-async function getDBFromBlob(dbName) {
-  const key = `${BLOB_FOLDER}/${dbName}.json`;
-  const blobs = await list({ prefix: key, token: process.env.BLOB_READ_WRITE_TOKEN });
-
-  if (blobs.blobs.length > 0) {
-    const url = blobs.blobs[0].url;
-    const res = await fetch(url);
-    return await res.json();
-  }
-  return null;
-}
-
-// Save DB to Blob
-async function saveDBToBlob(dbName, data) {
-  const key = `${BLOB_FOLDER}/${dbName}.json`;
-  await put(key, JSON.stringify(data, null, 2), {
-    access: 'public',
-    token: process.env.BLOB_READ_WRITE_TOKEN,
-    contentType: 'application/json'
-  });
-}
-
-server.use(middlewares);
-
 server.use(async (req, res, next) => {
   const dbName = req.header('X-DB-NAME');
+  if (!dbName) return res.status(400).json({ error: 'X-DB-NAME header is required' });
+  if (!isValidGUID(dbName)) return res.status(400).json({ error: 'X-DB-NAME must be a valid GUID' });
 
-  if (!dbName) {
-    return res.status(400).json({ error: 'X-DB-NAME header is required' });
+  const blobPath = `db/${dbName}.json`;
+
+  // Fetch the blob content if exists, otherwise create it
+  let dbJson;
+  try {
+    const existing = await get(blobPath);
+    const resp = await fetch(existing.url);
+    dbJson = await resp.json();
+  } catch {
+    // Create from template.json
+    dbJson = {};
+    await put(blobPath, JSON.stringify(dbJson, null, 2), {
+      contentType: 'application/json',
+      access: 'public',
+    });
   }
 
-  if (!isValidGUID(dbName)) {
-    return res.status(400).json({ error: 'X-DB-NAME must be a valid GUID' });
-  }
+  // Create in-memory router
+  const router = jsonServer.router(dbJson);
 
-  // Load DB from blob or initialize from template
-  let dbData = await getDBFromBlob(dbName);
-  if (!dbData) {
-    const templatePath = path.join(__dirname, 'template.json');
-    if (fs.existsSync(templatePath)) {
-      dbData = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
-    } else {
-      dbData = {};
-    }
-    await saveDBToBlob(dbName, dbData);
-  }
-
-  // Intercept JSON Server responses so we can save updates
-  const router = jsonServer.router(dbData);
-
-  // Capture DB state after any write request
+  // Capture save changes on write operations
   res.on('finish', async () => {
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
-      await saveDBToBlob(dbName, router.db.getState());
+      await put(blobPath, JSON.stringify(router.db.getState(), null, 2), {
+        contentType: 'application/json',
+        access: 'public',
+      });
     }
   });
 
@@ -84,5 +56,5 @@ server.use(async (req, res, next) => {
 });
 
 server.listen(port, () => {
-  console.log(`JSON Server with Vercel Blob storage running on port ${port}`);
+  console.log(`Server running on port ${port}`);
 });
