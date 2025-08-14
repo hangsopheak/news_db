@@ -2,6 +2,7 @@
   "name": "news_db",
   "version": "1.0.0",
   "description": "",
+  "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,6 +11,8 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "json-server": "^0.17.0"
+     "@vercel/blob": "^0.18.0",
+    "json-server": "^0.17.0",
+    "node-fetch": "^3.3.2"
   }
 }
