@@ -1,60 +1,76 @@
-import { put, get } from '@vercel/blob';
-import jsonServer from 'json-server';
+// server.js
 import express from 'express';
-import fetch from 'node-fetch';
+import bodyParser from 'body-parser';
+import { put, list } from '@vercel/blob';
+import fetch from 'node-fetch'; // Needed to read blob contents
 
-const server = express();
-server.use(express.json());
+const app = express();
+app.use(bodyParser.json());
 
-const middlewares = jsonServer.defaults();
-server.use(middlewares);
+const BLOB_FOLDER = 'db/'; // All DB files go here
 
-const port = process.env.PORT || 3000;
-
-// Validate GUID format
-function isValidGUID(guid) {
-  const guidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-  return guidRegex.test(guid);
+// Helper: Load DB by name
+async function loadDb(dbName) {
+  const { blobs } = await list({ prefix: `${BLOB_FOLDER}${dbName}.json` });
+  if (blobs.length > 0) {
+    const resp = await fetch(blobs[0].url);
+    return await resp.json();
+  }
+  return {}; // If file doesn't exist, start with empty DB
 }
 
-server.use(async (req, res, next) => {
-  const dbName = req.header('X-DB-NAME');
-  if (!dbName) return res.status(400).json({ error: 'X-DB-NAME header is required' });
-  if (!isValidGUID(dbName)) return res.status(400).json({ error: 'X-DB-NAME must be a valid GUID' });
-
-  const blobPath = `db/${dbName}.json`;
-
-  // Fetch the blob content if exists, otherwise create it
-  let dbJson;
-  try {
-    const existing = await get(blobPath);
-    const resp = await fetch(existing.url);
-    dbJson = await resp.json();
-  } catch {
-    // Create from template.json
-    dbJson = {};
-    await put(blobPath, JSON.stringify(dbJson, null, 2), {
-      contentType: 'application/json',
+// Helper: Save DB by name (overwrite existing file)
+async function saveDb(dbName, data) {
+  await put(
+    `${BLOB_FOLDER}${dbName}.json`,
+    JSON.stringify(data, null, 2),
+    {
       access: 'public',
-    });
-  }
-
-  // Create in-memory router
-  const router = jsonServer.router(dbJson);
-
-  // Capture save changes on write operations
-  res.on('finish', async () => {
-    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
-      await put(blobPath, JSON.stringify(router.db.getState(), null, 2), {
-        contentType: 'application/json',
-        access: 'public',
-      });
+      addRandomSuffix: false, // Prevents duplicate files
+      allowOverwrite: true
     }
-  });
+  );
+}
 
-  router(req, res, next);
+// Middleware: Require X-DB-NAME
+app.use((req, res, next) => {
+  const dbName = req.headers['x-db-name'];
+  if (!dbName) {
+    return res.status(400).json({ error: 'Missing X-DB-NAME header' });
+  }
+  req.dbName = dbName;
+  next();
 });
 
-server.listen(port, () => {
+// GET all data
+app.get('/', async (req, res) => {
+  const db = await loadDb(req.dbName);
+  res.json(db);
+});
+
+// POST: Add new entry
+app.post('/', async (req, res) => {
+  const db = await loadDb(req.dbName);
+  const newItem = req.body;
+  if (!Array.isArray(db.items)) db.items = [];
+  db.items.push(newItem);
+  await saveDb(req.dbName, db);
+  res.status(201).json(newItem);
+});
+
+// PUT: Replace DB
+app.put('/', async (req, res) => {
+  await saveDb(req.dbName, req.body);
+  res.json({ status: 'DB replaced' });
+});
+
+// DELETE: Clear DB
+app.delete('/', async (req, res) => {
+  await saveDb(req.dbName, {});
+  res.json({ status: 'DB cleared' });
+});
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });

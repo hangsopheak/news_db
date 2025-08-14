@@ -11,7 +11,8 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
-     "@vercel/blob": "^0.18.0",
+    "@vercel/blob": "^0.18.0",
+    "express": "^4.19.2",
     "json-server": "^0.17.0",
     "node-fetch": "^3.3.2"
   }
